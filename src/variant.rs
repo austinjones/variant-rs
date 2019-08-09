@@ -3,6 +3,33 @@ use rand::distributions::{Distribution, Uniform};
 use std::marker::PhantomData;
 use std::iter;
 
+
+// map with probability (or pool with probability lambda)
+// pool, but inline.  once exhausted returns None
+// Variants::from_slice() => transparent SliceRandom::choose
+
+pub struct Variants {
+
+}
+
+impl Variants {
+    pub fn from_fn<F, R: Rng, T>(function: F) -> FnVariant<F, R, T> where F: Fn(&mut R) -> T {
+        FnVariant {
+            function,
+            _rng: PhantomData,
+            _type: PhantomData
+        }
+    }
+
+//    fn from_fn<R: Rng, F>(function: F) -> FnVariant<F, R, Self::Item> where F: Fn(&mut R) -> Self::Item {
+//        FnVariant::new(function)
+//    }
+
+    pub fn from_distribution<R: Rng, D, T>(distribution: D) -> DistributionVariant<D, T, R> where D: Distribution<T> {
+        DistributionVariant::from(distribution)
+    }
+}
+
 pub struct VariantIter<'r, V, R> {
     variant: V,
     rng: &'r mut R
@@ -27,21 +54,6 @@ pub trait Variant: Sized {
 
     fn next(&self, rng: &mut Self::Rng) -> Self::Item;
 
-    fn from_fn<F, R: Rng>(function: F) -> FnVariant<F, R, Self::Item> where F: Fn(&mut R) -> Self::Item {
-        FnVariant {
-            function,
-            _rng: PhantomData,
-            _type: PhantomData
-        }
-    }
-
-//    fn from_fn<R: Rng, F>(function: F) -> FnVariant<F, R, Self::Item> where F: Fn(&mut R) -> Self::Item {
-//        FnVariant::new(function)
-//    }
-
-    fn from_distribution<R: Rng, D>(distribution: D) -> DistributionVariant<D, Self::Item, Self::Rng> where D: Distribution<Self::Item> {
-        DistributionVariant::from(distribution)
-    }
 
     fn into_iter<R: Rng>(self, rng: &mut R) -> VariantIter<Self, R> {
         VariantIter {
@@ -59,9 +71,16 @@ pub trait Variant: Sized {
         }
     }
 
-    fn map<M, A, B>(self, map: M) -> MapVariant<M, Self> where M: Fn(A) -> B {
+    fn map<M, B>(self, map: M) -> MapVariant<M, Self> where M: Fn(&mut Self::Rng, Self::Item) -> B {
         MapVariant {
             map,
+            variant: self
+        }
+    }
+
+    fn density<F>(self, density: F) -> DensityVariant<F, Self> where F: Fn(&Self::Item) -> f64 {
+        DensityVariant {
+            density,
             variant: self
         }
     }
@@ -104,12 +123,13 @@ pub struct MapVariant<M, V> {
     variant: V
 }
 
-impl<M, V: Variant, B> Variant for MapVariant<M, V> where M: Fn(V::Item) -> B {
+impl<M, V: Variant, B> Variant for MapVariant<M, V> where M: Fn(&mut V::Rng, V::Item) -> B {
     type Item = B;
     type Rng = V::Rng;
 
     fn next(&self, rng: &mut V::Rng) -> Self::Item {
-        (&self.map)(self.variant.next(rng))
+        let val = self.variant.next(rng);
+        (&self.map)(rng, val)
     }
 }
 
@@ -220,6 +240,26 @@ impl<D, T, R: Rng> Variant for DistributionVariant<D, T, R> where D: Distributio
 
     fn next(&self, rng: &mut R) -> Self::Item {
         self.distribution.sample(rng)
+    }
+}
+
+pub struct DensityVariant<D, V: Variant> {
+    density: D,
+    variant: V
+}
+
+impl<D, V: Variant> Variant for DensityVariant<D, V> where D: Fn(&V::Item) -> f64 {
+    type Item = V::Item;
+    type Rng = V::Rng;
+
+    fn next(&self, rng: &mut V::Rng) -> V::Item {
+        loop {
+            let item = self.variant.next(rng);
+            let mut p = (self.density)(&item);
+            if rng.gen_range(0.0, 1.0) < p {
+                return item;
+            }
+        }
     }
 }
 

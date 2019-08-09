@@ -1,5 +1,8 @@
 pub mod tree_rng;
-pub mod variant;
+mod variant;
+
+pub use variant::*;
+
 
 #[cfg(test)]
 mod tests {
